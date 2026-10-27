@@ -1,0 +1,45 @@
+{
+  "name": "electron-fastapi-app",
+  "version": "1.0.0",
+  "description": "Electron app con servidor FastAPI",
+  "main": "main.js",
+  "author": "tu-nombre",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "build:backend": "powershell -ExecutionPolicy Bypass -File backend/build_sidecar.ps1",
+    "dist": "npm run build:backend && electron-builder"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.1",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.electron.fastapi",
+    "productName": "ElectronFastAPI",
+    "files": [
+      "**/*",
+      "!backend",
+      "!**/*.pyc"
+    ],
+    "extraResources": [
+      {
+        "from": "dist-backend/",
+        "to": "backend",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.1",
+    "better-sqlite3": "^13.0.3",
+    "get-port": "6.1.2"
+  }
+}

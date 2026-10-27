@@ -1,0 +1,117 @@
+ipcMain.handle('download-plugin', async (_, pluginId) => {
+  try {
+    const info = await new Promise((resolve, reject) => {
+      http.get(`http://localhost:4005/plugins/${pluginId}/download/latest`, (res) => {
+        let body = '';
+        res.on('data', chunk => body += chunk);
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(body));
+          } catch (e) {
+            reject(e);
+          }
+        });
+      }).on('error', reject);
+    });
+
+    const zipballUrl = info.zipball_url;
+    if (!zipballUrl) throw new Error('No se encontró zipball_url');
+
+    const pluginsDir = path.join(__dirname, 'backend/plugins');
+    if (!fs.existsSync(pluginsDir)) {
+      fs.mkdirSync(pluginsDir, { recursive: true });
+    }
+
+    // Snapshot ANTES de extraer
+    const beforeDirs = new Set(
+      fs.readdirSync(pluginsDir, { withFileTypes: true })
+        .filter(dirent => dirent.isDirectory())
+        .map(dirent => dirent.name)
+        .filter(name => !name.startsWith('.') && name !== '__pycache__')
+    );
+
+    const tempDir = app.getPath('temp');
+    const zipPath = path.join(tempDir, info.fileName || `${info.pluginName}.zip`);
+
+    await downloadZip(zipballUrl, zipPath);
+
+    const zip = new AdmZip(zipPath);
+    zip.extractAllTo(pluginsDir, true);
+
+    try {
+      fs.unlinkSync(zipPath);
+    } catch (e) {
+      console.log('No se pudo eliminar zip temporal:', e.message);
+    }
+
+    const normalizePluginName = (name) => {
+      if (!name) return '';
+      return name.toString().trim().toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_');
+    };
+
+    const pluginNameClean = normalizePluginName(info.pluginName || info.plugin_name);
+    let targetPath = null;
+
+    try {
+      // Snapshot DESPUÉS de extraer
+      const afterDirs = fs.readdirSync(pluginsDir, { withFileTypes: true })
+        .filter(dirent => dirent.isDirectory())
+        .map(dirent => dirent.name)
+        .filter(name => !name.startsWith('.') && name !== '__pycache__');
+
+      // SOLO carpetas nuevas
+      const newlyExtracted = afterDirs.filter(dir => !beforeDirs.has(dir));
+
+      if (newlyExtracted.length === 1 && pluginNameClean) {
+        const srcPath = path.join(pluginsDir, newlyExtracted[0]);
+        const dstPath = path.join(pluginsDir, pluginNameClean);
+
+        if (fs.existsSync(dstPath)) {
+          try {
+            fs.rmSync(dstPath, { recursive: true, force: true });
+            console.log(`[PLUGIN INSTALL] Eliminado destino existente: ${pluginNameClean}`);
+          } catch (e) {
+            console.log('No se pudo eliminar destino existente:', e.message);
+          }
+        }
+
+        fs.renameSync(srcPath, dstPath);
+        console.log(`[PLUGIN INSTALL] ${newlyExtracted[0]} -> ${pluginNameClean}`);
+        targetPath = dstPath;
+      } else if (newlyExtracted.length === 0) {
+        console.log('[PLUGIN INSTALL] No se detectó ninguna carpeta nueva tras extraer el zip.');
+      } else if (newlyExtracted.length > 1) {
+        console.log('[PLUGIN INSTALL] Se detectaron varias carpetas nuevas, NO se renombrará ninguna para no tocar carpetas existentes:', newlyExtracted);
+      } else {
+        console.log('[PLUGIN INSTALL] Falta pluginName, NO se renombrará la carpeta nueva.');
+      }
+
+      // Instalar requirements.txt si existe en la carpeta ya renombrada
+      if (targetPath && fs.existsSync(targetPath)) {
+        const reqFile = path.join(targetPath, 'requirements.txt');
+        if (fs.existsSync(reqFile)) {
+          console.log(`[PLUGIN INSTALL] Instalando dependencias desde ${reqFile}`);
+          const backendDir = path.join(__dirname, 'backend');
+          const isWin = process.platform === 'win32';
+          const venvPip = isWin
+            ? path.join(backendDir, 'venv', 'Scripts', 'pip.exe')
+            : path.join(backendDir, 'venv', 'bin', 'pip');
+
+          if (fs.existsSync(venvPip)) {
+            const result = require('child_process').spawnSync(venvPip, ['install', '-r', reqFile], { cwd: backendDir, stdio: 'inherit' });
+            console.log(`[PLUGIN INSTALL] pip (venv) finalizado con código: ${result.status}`);
+          } else {
+            const result = require('child_process').spawnSync('pip', ['install', '-r', reqFile], { cwd: backendDir, stdio: 'inherit' });
+            console.log(`[PLUGIN INSTALL] pip (sistema) finalizado con código: ${result.status}`);
+          }
+        }
+      }
+    } catch (e) {
+      console.log('Error al renombrar/instalar plugin:', e.message);
+    }
+
+    return { success: true, message: `Plugin ${info.pluginName} descargado y extraído.` };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
